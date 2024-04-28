@@ -66,8 +66,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         if: always() # 总是运行这个步骤
         with:
-          tag_name: v1.0.${{ github.run_number }} # 使用构建号作为标签名
-          prerelease: true
+          tag_name: v${{ github.run_number }}-${{ github.run_id }} # 使用时间戳作为标签名
+          prerelease: false
           draft: false
           files: |
             release.zip
