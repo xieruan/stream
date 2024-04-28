@@ -1,4 +1,4 @@
-name: aioCloud CI
+name: stream CI
 on: [push, pull_request]
 
 jobs:
@@ -63,14 +63,13 @@ jobs:
         uses: softprops/action-gh-release@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        if: startsWith(github.ref, 'refs/tags/')
+        if: always() # 总是运行这个步骤
         with:
           prerelease: true
           draft: false
           files: |
             release.zip
           body: |
-            [![](https://img.shields.io/badge/Telegram-Group-blue)](https://t.me/aioCloud) [![](https://img.shields.io/badge/Telegram-Channel-green)](https://t.me/aioCloud_channel)
             ## 更新日志
             * 将会很快更新
 
