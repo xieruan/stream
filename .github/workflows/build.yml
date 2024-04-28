@@ -1,4 +1,5 @@
 name: stream CI
+
 on: [push, pull_request]
 
 jobs:
@@ -59,17 +60,24 @@ jobs:
         run: |
           echo "CHECKSUM=$(sha256sum release.zip | awk '{print $1}')" >> $GITHUB_ENV
 
+      - name: Create Tag
+        id: create_tag
+        run: |
+          git tag v1.0.$(( $(git tag --list 'v1.0.*' | wc -l) + 1 ))
+
       - name: Release
         uses: softprops/action-gh-release@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         if: always() # 总是运行这个步骤
         with:
+          tag_name: ${{ steps.create_tag.outputs.stdout }}
           prerelease: true
           draft: false
           files: |
             release.zip
           body: |
+            [![](https://img.shields.io/badge/Telegram-Group-blue)](https://t.me/aioCloud) [![](https://img.shields.io/badge/Telegram-Channel-green)](https://t.me/aioCloud_channel)
             ## 更新日志
             * 将会很快更新
 
