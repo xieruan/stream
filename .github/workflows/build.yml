@@ -60,18 +60,13 @@ jobs:
         run: |
           echo "CHECKSUM=$(sha256sum release.zip | awk '{print $1}')" >> $GITHUB_ENV
 
-      - name: Create Tag
-        id: create_tag
-        run: |
-          git tag v1.0.$(( $(git tag --list 'v1.0.*' | wc -l) + 1 ))
-
       - name: Release
         uses: softprops/action-gh-release@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         if: always() # 总是运行这个步骤
         with:
-          tag_name: ${{ steps.create_tag.outputs.stdout }}
+          tag_name: v1.0.${{ github.run_number }} # 使用构建号作为标签名
           prerelease: true
           draft: false
           files: |
