@@ -18,14 +18,17 @@ yum -y install wget
 
 ## 一键部署
 ```bash
-部署
 curl -fsSL https://raw.githubusercontent.com/xieruan/stream/master/scripts/kickstart.sh | bash
+```
 
 升级
-curl -fsSL https://git.io/JkMel | bash
 
+```bash
+curl -fsSL https://raw.githubusercontent.com/xieruan/stream/master/scripts/upgrade.sh | bash
+```
 卸载
-curl -fsSL https://git.io/JkMeR | bash
+```bash
+curl -fsSL https://raw.githubusercontent.com/xieruan/stream/master/scripts/remove.sh | bash
 ```
 
 ## 配置文件
@@ -61,7 +64,6 @@ ytimg.com 全国
 googleapis.com 全国
 yt3.ggpht.com 全国
 
-更多列表https://cdn.jsdelivr.net/gh/aiocloud/stream@main/ruleset/allinone.list
 
 
 ```
