@@ -38,12 +38,36 @@ func handleCreate(w http.ResponseWriter, r *http.Request) {
 	write(w, fmt.Sprintf("FAIL: %s\n", addr))
 }
 func handleList(w http.ResponseWriter, r *http.Request) {
-	list := List()
-	response := strings.Join(list, "\n")
-	write(w, response)
+	s := r.URL.Query().Get("secret")
+	if s == "" {
+		write(w, "FAIL: No Secret\n")
+		return
+	}
+
+	if !strings.EqualFold(Secret, s) {
+		write(w, "FAIL: Unknown Secret\n")
+		return
+	}
+	cidrs := List()
+	var response strings.Builder
+	for _, cidr := range cidrs {
+		response.WriteString(cidr.String())
+		response.WriteRune('\n')
+	}
+	write(w, response.String())
 }
 
 func handleDelete(w http.ResponseWriter, r *http.Request) {
+	s := r.URL.Query().Get("secret")
+	if s == "" {
+		write(w, "FAIL: No Secret\n")
+		return
+	}
+
+	if !strings.EqualFold(Secret, s) {
+		write(w, "FAIL: Unknown Secret\n")
+		return
+	}
 	addr := r.URL.Query().Get("addr")
 	if addr == "" {
 		write(w, "FAIL: No Address Provided for Deletion\n")
