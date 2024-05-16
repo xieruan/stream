@@ -33,6 +33,33 @@ func ParseCIDR(s string) *net.IPNet {
 
 	return cidr
 }
+func List() []*net.IPNet {
+	mutex.RLock()
+	defer mutex.RUnlock()
+
+	cidrs := make([]*net.IPNet, len(list))
+	copy(cidrs, list)
+	return cidrs
+}
+func Delete(addr string) bool {
+	ip := ParseIP(addr)
+	found := false
+
+	mutex.Lock()
+	defer mutex.Unlock()
+
+	for i := 0; i < len(list); i++ {
+		if list[i].Contains(ip) {
+			// Remove the CIDR at index i by swapping with the last element
+			list[i] = list[len(list)-1]
+			list = list[:len(list)-1]
+			found = true
+			break
+		}
+	}
+
+	return found
+}
 
 func Listen(addr string) {
 	go func() {
