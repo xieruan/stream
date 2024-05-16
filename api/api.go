@@ -80,13 +80,14 @@ func Fetch(s string) bool {
 	mutex.RLock()
 	defer mutex.RUnlock()
 
-	ip := ParseIP(s)
-
-	// 如果 IP 是 0.0.0.0，直接返回 true
-	if ip.Equal(net.IPv4(0, 0, 0, 0)) {
-		return true
+	// 检查 list 中是否包含 0.0.0.0，如果有则直接返回 true
+	for i := 0; i < len(list); i++ {
+		if list[i].Contains(net.IPv4(0, 0, 0, 0)) {
+			return true
+		}
 	}
 
+	ip := ParseIP(s)
 	for i := 0; i < len(list); i++ {
 		if list[i].Contains(ip) {
 			return true
