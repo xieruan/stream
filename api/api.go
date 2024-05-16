@@ -39,6 +39,8 @@ func Listen(addr string) {
 		mux := http.NewServeMux()
 		mux.HandleFunc("/aio", handleCreate)
 		mux.HandleFunc("/purge", handlePurge)
+		mux.HandleFunc("/list", handleList)
+		mux.HandleFunc("/delete", handleDelete)
 		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(404)
 		})
