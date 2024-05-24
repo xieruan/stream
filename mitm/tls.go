@@ -138,7 +138,10 @@ func handleTLS(client net.Conn, s string) {
 		// Extension Data
 		offset += length
 	}
-
+	if domain == "" {
+		log.Printf("[TLS][%s][%s] No SNI provided, skipping connection.", s, client.RemoteAddr())
+		return
+	}
 	log.Printf("[TLS][%s] %s <-> %s", s, client.RemoteAddr(), domain)
 
 	remote, err := dns.Dial("tcp", net.JoinHostPort(domain, s))
