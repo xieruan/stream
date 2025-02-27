@@ -70,13 +70,28 @@ func handleHTTP(client net.Conn, s string) {
 	if _, ok := list["HOST"]; !ok {
 		return
 	}
-	// 检查 client.RemoteAddr().String() 和 list["HOST"] 是否相同，如果相同直接返回
-	if client.RemoteAddr().String() == list["HOST"] {
-		log.Printf("[HTTP][%s] Same IP, skipping connection", s)
+
+	// 提取 Host 和客户端 IP 进行比较
+	hostPort := list["HOST"]
+	host, _, err := net.SplitHostPort(hostPort)
+	if err != nil { // 处理不带端口的情况
+		host = hostPort
+	}
+
+	clientAddr := client.RemoteAddr().String()
+	clientIP, _, err := net.SplitHostPort(clientAddr)
+	if err != nil {
+		log.Printf("[HTTP][%s][%s] Invalid client address: %v", s, clientAddr, err)
 		return
 	}
 
-	log.Printf("[HTTP][%s] %s <-> %s", s, client.RemoteAddr(), list["HOST"])
+	// 如果 Host 主机部分和客户端 IP 相同则阻断
+	if host == clientIP {
+		log.Printf("[HTTP][%s][%s] Block self connection to %s", s, clientAddr, host)
+		return
+	}
+
+	log.Printf("[HTTP][%s] %s <-> %s", s, clientAddr, list["HOST"])
 
 	remote, err := dns.Dial("tcp", net.JoinHostPort(list["HOST"], s))
 	if err != nil {
