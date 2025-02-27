@@ -1,6 +1,7 @@
 package mitm
 
 import (
+	"io"
 	"log"
 	"net"
 	"strings"
@@ -9,8 +10,8 @@ import (
 	"github.com/aiocloud/stream/dns"
 )
 
-// 启动TLS监听服务
-func beginTLS(addr string) error {
+// 启动TLS代理服务
+func BeginTLS(addr string) error {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return err
@@ -29,7 +30,7 @@ func beginTLS(addr string) error {
 	}
 }
 
-// 处理单个TLS连接
+// 处理TLS连接
 func handleTLSConnection(client net.Conn, port string) {
 	defer client.Close()
 	clientAddr := client.RemoteAddr().String()
@@ -59,26 +60,22 @@ func handleTLSConnection(client net.Conn, port string) {
 
 // 客户端验证逻辑
 func validateClient(addr, port string) (net.IP, bool) {
-	// 解析客户端IP
 	ipStr, _, err := net.SplitHostPort(addr)
 	if err != nil {
 		ipStr = addr
 	}
 
-	// 检查IP格式
 	ip := net.ParseIP(ipStr)
 	if ip == nil {
-		log.Printf("[TLS][%s][%s] Invalid client IP format", port, addr)
+		log.Printf("[TLS][%s][%s] Invalid client IP", port, addr)
 		return nil, false
 	}
 
-	// 阻断回环地址
 	if ip.IsLoopback() || ip.IsUnspecified() {
 		log.Printf("[TLS][%s][%s] Block loopback client", port, addr)
 		return nil, false
 	}
 
-	// API授权检查
 	if !api.Fetch(ipStr) {
 		log.Printf("[TLS][%s][%s] IP not allowed", port, addr)
 		return nil, false
@@ -95,12 +92,10 @@ func parseTLSSNI(client net.Conn, port, clientAddr string) (string, bool) {
 		return "", false
 	}
 
-	// 检查TLS记录类型
 	if buf[0] != 0x16 {
 		return "", false
 	}
 
-	// 解析SNI字段
 	sni := parseSNI(buf[:n])
 	if sni == "" {
 		log.Printf("[TLS][%s][%s] No SNI provided", port, clientAddr)
@@ -110,37 +105,49 @@ func parseTLSSNI(client net.Conn, port, clientAddr string) (string, bool) {
 
 // 目标验证逻辑
 func shouldBlockTarget(host string, clientIP net.IP, port, clientAddr string) bool {
-	// 阻断IP地址格式
 	if isIPAddress(host) {
 		log.Printf("[TLS][%s][%s] Block IP-based SNI: %s", port, clientAddr, host)
 		return true
 	}
 
-	// 特殊关键字阻断
 	if strings.EqualFold(host, "localhost") {
 		log.Printf("[TLS][%s][%s] Block localhost", port, clientAddr)
 		return true
 	}
 
-	// DNS解析检查
 	ips, err := net.LookupIP(host)
 	if err != nil {
 		log.Printf("[TLS][%s][%s] DNS lookup failed: %s", port, clientAddr, host)
 		return true
 	}
 
-	// IP匹配检查
 	for _, ip := range ips {
 		if normalizeIP(ip).Equal(normalizeIP(clientIP)) {
-			log.Printf("[TLS][%s][%s] Block self-connection: %s", 
-				port, clientAddr, ip)
+			log.Printf("[TLS][%s][%s] Block self-connection: %s", port, clientAddr, ip)
 			return true
 		}
 	}
 	return false
 }
 
-// 工具函数集
+// 代理连接处理
+func proxyConnection(client net.Conn, target, port, clientAddr string) {
+	remote, err := dns.Dial("tcp", net.JoinHostPort(target, port))
+	if err != nil {
+		log.Printf("[TLS][%s][%s] Connect failed: %v", port, clientAddr, err)
+		return
+	}
+	defer remote.Close()
+
+	// 双向数据转发
+	go func() {
+		defer client.Close()
+		io.Copy(remote, client)
+	}()
+	io.Copy(client, remote)
+}
+
+// 工具函数
 func getListenPort(addr string) string {
 	_, port, _ := net.SplitHostPort(addr)
 	return port
@@ -158,8 +165,8 @@ func isIPAddress(host string) bool {
 }
 
 func extractTargetHost(sni string) string {
-	host, _, err := net.SplitHostPort(sni)
-	if err != nil {
+	host, _, _ := net.SplitHostPort(sni)
+	if host == "" {
 		return sni
 	}
 	return host
@@ -172,65 +179,46 @@ func normalizeIP(ip net.IP) net.IP {
 	return ip
 }
 
-func proxyConnection(client net.Conn, target, port, clientAddr string) {
-	remote, err := dns.Dial("tcp", net.JoinHostPort(target, port))
-	if err != nil {
-		log.Printf("[TLS][%s][%s] Connect failed: %v", port, clientAddr, err)
-		return
-	}
-	defer remote.Close()
-
-	// 数据转发逻辑
-	go func() {
-		defer client.Close()
-		_, _ = remote.ReadFrom(client)
-	}()
-
-	_, _ = client.ReadFrom(remote)
-}
-
-// TLS解析实现
+// TLS SNI解析器
 func parseSNI(data []byte) string {
-	offset := 5 // 跳过协议版本等字段
+	offset := 5 // 跳过协议版本
 
-	// 基础结构校验
 	if len(data) < offset+38 {
 		return ""
 	}
 
-	// 跳过Random、SessionID等字段
 	offset += 32 // Random
 	offset += 1  // SessionID长度
 	offset += int(data[offset-1])
 
-	// 处理Cipher Suites
+	// Cipher Suites
 	if offset+2 > len(data) {
 		return ""
 	}
 	cipherLen := int(data[offset])<<8 | int(data[offset+1])
 	offset += 2 + cipherLen
 
-	// 处理Compression Methods
+	// Compression Methods
 	if offset >= len(data) {
 		return ""
 	}
 	compressionLen := int(data[offset])
 	offset += 1 + compressionLen
 
-	// 处理Extensions
+	// Extensions
 	if offset+2 > len(data) {
 		return ""
 	}
 	extensionsLen := int(data[offset])<<8 | int(data[offset+1])
 	offset += 2
-	endOffset := offset + extensionsLen
 
+	endOffset := offset + extensionsLen
 	for offset < endOffset && offset+4 <= len(data) {
 		extType := int(data[offset])<<8 | int(data[offset+1])
 		extLen := int(data[offset+2])<<8 | int(data[offset+3])
 		offset += 4
 
-		if extType == 0 { // SNI扩展
+		if extType == 0 {
 			return parseSNIEntry(data[offset : offset+extLen])
 		}
 		offset += extLen
