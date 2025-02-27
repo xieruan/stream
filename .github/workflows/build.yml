@@ -50,7 +50,7 @@ jobs:
           zip -9 -r release.zip release
 
       - name: Upload
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v3
         with:
           name: release
           path: release
@@ -66,7 +66,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         if: always() # 总是运行这个步骤
         with:
-          tag_name: v${{ github.run_number }}-${{ github.run_id }} # 使用时间戳作为标签名
+          tag_name: v$(date +'%Y%m%d')-${{ github.run_id }} # 使用当前日期（年月日）作为标签
           prerelease: false
           draft: false
           files: |
