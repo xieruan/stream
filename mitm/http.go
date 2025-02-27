@@ -70,6 +70,11 @@ func handleHTTP(client net.Conn, s string) {
 	if _, ok := list["HOST"]; !ok {
 		return
 	}
+	// 检查 client.RemoteAddr().String() 和 list["HOST"] 是否相同，如果相同直接返回
+	if client.RemoteAddr().String() == list["HOST"] {
+		log.Printf("[HTTP][%s] Same IP, skipping connection", s)
+		return
+	}
 
 	log.Printf("[HTTP][%s] %s <-> %s", s, client.RemoteAddr(), list["HOST"])
 
