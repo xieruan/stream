@@ -3,11 +3,13 @@ package mitm
 import (
 	"log"
 	"net"
+	"strings"
 
 	"github.com/aiocloud/stream/api"
 	"github.com/aiocloud/stream/dns"
 )
 
+// 启动TLS监听服务
 func beginTLS(addr string) error {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -15,145 +17,247 @@ func beginTLS(addr string) error {
 	}
 	defer ln.Close()
 
-	s := GetListenPort(ln.Addr().String())
-	log.Printf("[TLS][%s] Started", s)
+	port := getListenPort(ln.Addr().String())
+	log.Printf("[TLS][%s] Service started", port)
 
 	for {
-		client, err := ln.Accept()
+		conn, err := ln.Accept()
 		if err != nil {
 			return err
 		}
-
-		go handleTLS(client, s)
+		go handleTLSConnection(conn, port)
 	}
 }
 
-func handleTLS(client net.Conn, s string) {
+// 处理单个TLS连接
+func handleTLSConnection(client net.Conn, port string) {
 	defer client.Close()
+	clientAddr := client.RemoteAddr().String()
 
-	if !api.Fetch(client.RemoteAddr().String()) {
-		log.Printf("[TLS][%s][%s] IP Not Allow", s, client.RemoteAddr())
+	// 第一阶段：客户端验证
+	clientIP, ok := validateClient(clientAddr, port)
+	if !ok {
 		return
 	}
 
-	data := make([]byte, 1400)
-	size, err := client.Read(data)
-	if err != nil || size <= 44 {
-		return
-	}
-	data = data[:size]
-
-	if data[0] != 0x16 {
+	// 解析TLS Client Hello
+	sni, ok := parseTLSSNI(client, port, clientAddr)
+	if !ok {
 		return
 	}
 
-	offset := 0
-	offset += 1 // Content Type
-	offset += 2 // Version
-	offset += 2 // Length
-
-	// Handshake Type
-	if data[offset] != 0x01 {
-		log.Printf("[TLS][%s][%s] Not Client Hello", s, client.RemoteAddr())
-		return
-	}
-	offset += 1
-
-	offset += 3  // Length
-	offset += 2  // Version
-	offset += 32 // Random
-
-	// Session ID
-	length := int(data[offset])
-	offset += 1
-	offset += length
-	if size <= offset+1 {
+	// 第二阶段：目标验证
+	targetHost := extractTargetHost(sni)
+	if shouldBlockTarget(targetHost, clientIP, port, clientAddr) {
 		return
 	}
 
-	// Cipher Suites
-	length = (int(data[offset]) << 8) + int(data[offset+1])
-	offset += 2
-	offset += length
-	if size <= offset {
-		return
-	}
+	// 建立代理连接
+	log.Printf("[TLS][%s] %s -> %s", port, clientAddr, sni)
+	proxyConnection(client, sni, port, clientAddr)
+}
 
-	// Compression Methods
-	length = int(data[offset])
-	offset += 1
-	offset += length
-
-	// Extension Length
-	offset += 2
-	if size <= offset+1 {
-		return
-	}
-
-	domain := ""
-	for size > offset+2 && domain == "" {
-		// Extension Type
-		name := (int(data[offset]) << 8) + int(data[offset+1])
-		offset += 2
-		if size <= offset+1 {
-			return
-		}
-
-		// Extension Length
-		length = (int(data[offset]) << 8) + int(data[offset+1])
-		offset += 2
-
-		// Extension: Server Name
-		if name == 0 {
-			// Server Name List Length
-			offset += 2
-			if size <= offset {
-				return
-			}
-
-			// Server Name Type
-			if data[offset] != 0x00 {
-				log.Printf("[TLS][%s][%s] Not Host Name", s, client.RemoteAddr())
-				return
-			}
-			offset += 1
-			if size <= offset+1 {
-				return
-			}
-
-			// Server Name Length
-			length = (int(data[offset]) << 8) + int(data[offset+1])
-			offset += 2
-			if size <= offset+length {
-				return
-			}
-
-			// Server Name
-			domain = string(data[offset : offset+length])
-
-			// Get Out
-			break
-		}
-
-		// Extension Data
-		offset += length
-	}
-	if domain == "" {
-		log.Printf("[TLS][%s][%s] No SNI provided, skipping connection.", s, client.RemoteAddr())
-		return
-	}
-	log.Printf("[TLS][%s] %s <-> %s", s, client.RemoteAddr(), domain)
-
-	remote, err := dns.Dial("tcp", net.JoinHostPort(domain, s))
+// 客户端验证逻辑
+func validateClient(addr, port string) (net.IP, bool) {
+	// 解析客户端IP
+	ipStr, _, err := net.SplitHostPort(addr)
 	if err != nil {
+		ipStr = addr
+	}
+
+	// 检查IP格式
+	ip := net.ParseIP(ipStr)
+	if ip == nil {
+		log.Printf("[TLS][%s][%s] Invalid client IP format", port, addr)
+		return nil, false
+	}
+
+	// 阻断回环地址
+	if ip.IsLoopback() || ip.IsUnspecified() {
+		log.Printf("[TLS][%s][%s] Block loopback client", port, addr)
+		return nil, false
+	}
+
+	// API授权检查
+	if !api.Fetch(ipStr) {
+		log.Printf("[TLS][%s][%s] IP not allowed", port, addr)
+		return nil, false
+	}
+
+	return ip, true
+}
+
+// 解析TLS SNI
+func parseTLSSNI(client net.Conn, port, clientAddr string) (string, bool) {
+	buf := make([]byte, 1400)
+	n, err := client.Read(buf)
+	if err != nil || n <= 44 {
+		return "", false
+	}
+
+	// 检查TLS记录类型
+	if buf[0] != 0x16 {
+		return "", false
+	}
+
+	// 解析SNI字段
+	sni := parseSNI(buf[:n])
+	if sni == "" {
+		log.Printf("[TLS][%s][%s] No SNI provided", port, clientAddr)
+	}
+	return sni, sni != ""
+}
+
+// 目标验证逻辑
+func shouldBlockTarget(host string, clientIP net.IP, port, clientAddr string) bool {
+	// 阻断IP地址格式
+	if isIPAddress(host) {
+		log.Printf("[TLS][%s][%s] Block IP-based SNI: %s", port, clientAddr, host)
+		return true
+	}
+
+	// 特殊关键字阻断
+	if strings.EqualFold(host, "localhost") {
+		log.Printf("[TLS][%s][%s] Block localhost", port, clientAddr)
+		return true
+	}
+
+	// DNS解析检查
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		log.Printf("[TLS][%s][%s] DNS lookup failed: %s", port, clientAddr, host)
+		return true
+	}
+
+	// IP匹配检查
+	for _, ip := range ips {
+		if normalizeIP(ip).Equal(normalizeIP(clientIP)) {
+			log.Printf("[TLS][%s][%s] Block self-connection: %s", 
+				port, clientAddr, ip)
+			return true
+		}
+	}
+	return false
+}
+
+// 工具函数集
+func getListenPort(addr string) string {
+	_, port, _ := net.SplitHostPort(addr)
+	return port
+}
+
+func isIPAddress(host string) bool {
+	h, _, err := net.SplitHostPort(host)
+	if err == nil {
+		if len(h) > 1 && h[0] == '[' && h[len(h)-1] == ']' {
+			h = h[1 : len(h)-1]
+		}
+		return net.ParseIP(h) != nil
+	}
+	return net.ParseIP(host) != nil
+}
+
+func extractTargetHost(sni string) string {
+	host, _, err := net.SplitHostPort(sni)
+	if err != nil {
+		return sni
+	}
+	return host
+}
+
+func normalizeIP(ip net.IP) net.IP {
+	if v4 := ip.To4(); v4 != nil {
+		return v4
+	}
+	return ip
+}
+
+func proxyConnection(client net.Conn, target, port, clientAddr string) {
+	remote, err := dns.Dial("tcp", net.JoinHostPort(target, port))
+	if err != nil {
+		log.Printf("[TLS][%s][%s] Connect failed: %v", port, clientAddr, err)
 		return
 	}
 	defer remote.Close()
 
-	if _, err := remote.Write(data); err != nil {
-		return
-	}
-	data = nil
+	// 数据转发逻辑
+	go func() {
+		defer client.Close()
+		_, _ = remote.ReadFrom(client)
+	}()
 
-	CopyBuffer(client, remote)
+	_, _ = client.ReadFrom(remote)
+}
+
+// TLS解析实现
+func parseSNI(data []byte) string {
+	offset := 5 // 跳过协议版本等字段
+
+	// 基础结构校验
+	if len(data) < offset+38 {
+		return ""
+	}
+
+	// 跳过Random、SessionID等字段
+	offset += 32 // Random
+	offset += 1  // SessionID长度
+	offset += int(data[offset-1])
+
+	// 处理Cipher Suites
+	if offset+2 > len(data) {
+		return ""
+	}
+	cipherLen := int(data[offset])<<8 | int(data[offset+1])
+	offset += 2 + cipherLen
+
+	// 处理Compression Methods
+	if offset >= len(data) {
+		return ""
+	}
+	compressionLen := int(data[offset])
+	offset += 1 + compressionLen
+
+	// 处理Extensions
+	if offset+2 > len(data) {
+		return ""
+	}
+	extensionsLen := int(data[offset])<<8 | int(data[offset+1])
+	offset += 2
+	endOffset := offset + extensionsLen
+
+	for offset < endOffset && offset+4 <= len(data) {
+		extType := int(data[offset])<<8 | int(data[offset+1])
+		extLen := int(data[offset+2])<<8 | int(data[offset+3])
+		offset += 4
+
+		if extType == 0 { // SNI扩展
+			return parseSNIEntry(data[offset : offset+extLen])
+		}
+		offset += extLen
+	}
+	return ""
+}
+
+func parseSNIEntry(data []byte) string {
+	if len(data) < 2 {
+		return ""
+	}
+	listLen := int(data[0])<<8 | int(data[1])
+	data = data[2:]
+
+	for len(data) >= 3 {
+		nameType := data[0]
+		nameLen := int(data[1])<<8 | int(data[2])
+		data = data[3:]
+
+		if nameType != 0 || len(data) < nameLen {
+			break
+		}
+
+		if nameLen > 0 {
+			return string(data[:nameLen])
+		}
+		data = data[nameLen:]
+	}
+	return ""
 }
