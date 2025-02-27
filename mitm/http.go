@@ -78,20 +78,34 @@ func handleHTTP(client net.Conn, s string) {
 		host = hostPort
 	}
 
+	// 强制小写处理
+	host = strings.ToLower(host)
+
+	// 阻断条件 1: 本地回环地址或域名
+	if host == "localhost" || host == "127.0.0.1" || host == "::1" {
+		log.Printf("[HTTP][%s][%s] Block localhost connection to %s", s, client.RemoteAddr(), hostPort)
+		return
+	}
+
+	// 阻断条件 2: 检查是否为回环 IP
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		log.Printf("[HTTP][%s][%s] Block loopback IP connection to %s", s, client.RemoteAddr(), hostPort)
+		return
+	}
+
+	// 阻断条件 3: 客户端 IP 自连 (原逻辑保留)
 	clientAddr := client.RemoteAddr().String()
 	clientIP, _, err := net.SplitHostPort(clientAddr)
 	if err != nil {
 		log.Printf("[HTTP][%s][%s] Invalid client address: %v", s, clientAddr, err)
 		return
 	}
-
-	// 如果 Host 主机部分和客户端 IP 相同则阻断
 	if host == clientIP {
 		log.Printf("[HTTP][%s][%s] Block self connection to %s", s, clientAddr, host)
 		return
 	}
 
-	log.Printf("[HTTP][%s] %s <-> %s", s, clientAddr, list["HOST"])
+	log.Printf("[HTTP][%s] %s <-> %s", s, clientAddr, hostPort)
 
 	remote, err := dns.Dial("tcp", net.JoinHostPort(list["HOST"], s))
 	if err != nil {
