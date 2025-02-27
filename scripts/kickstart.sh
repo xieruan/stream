@@ -90,6 +90,10 @@ After=network.target
 
 [Service]
 Type=simple
+LimitAS=infinity
+LimitRSS=infinity
+LimitCORE=infinity
+LimitNOFILE=999999
 ExecStart=/usr/bin/stream -c /etc/stream.json
 Restart=always
 RestartSec=4
