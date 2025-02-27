@@ -11,7 +11,7 @@ import (
 )
 
 // 启动TLS代理服务
-func BeginTLS(addr string) error {
+func beginTLS(addr string) error {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return err
