@@ -36,29 +36,27 @@ func handleHTTP(client net.Conn, s string) {
 	// 获取客户端地址
 	clientAddr := client.RemoteAddr().String()
 
-	// [新增] 第一步：立即阻断本地回环客户端
+	// [阻断1] 检查客户端是否为回环地址
 	{
-		// 分离 IP 和端口
-		clientIP, _, err := net.SplitHostPort(clientAddr)
+		clientIPStr, _, err := net.SplitHostPort(clientAddr)
 		if err != nil {
-			// 处理无端口的情况（理论上不会发生，但安全处理）
-			clientIP = clientAddr
+			clientIPStr = clientAddr // 降级处理
 		}
 
-		// 检查是否为回环 IP
-		if ip := net.ParseIP(clientIP); ip != nil && ip.IsLoopback() {
+		// 转换为 IP 对象检查
+		if clientIP := net.ParseIP(clientIPStr); clientIP != nil && clientIP.IsLoopback() {
 			log.Printf("[HTTP][%s][%s] Block loopback client", s, clientAddr)
 			return
 		}
 
-		// 检查地址字符串包含 localhost
+		// 额外检查 localhost 字符串
 		if strings.Contains(strings.ToLower(clientAddr), "localhost") {
 			log.Printf("[HTTP][%s][%s] Block localhost client", s, clientAddr)
 			return
 		}
 	}
 
-	// 原有 API 检查
+	// [原有] API 白名单检查
 	if !api.Fetch(clientAddr) {
 		log.Printf("[HTTP][%s][%s] IP Not Allow", s, clientAddr)
 		return
@@ -91,7 +89,9 @@ func handleHTTP(client net.Conn, s string) {
 				continue
 			}
 
-			list[strings.ToUpper(strings.TrimSpace(SPL[0]))] = strings.TrimSpace(SPL[1])
+			key := strings.ToUpper(strings.TrimSpace(SPL[0]))
+			val := strings.TrimSpace(SPL[1])
+			list[key] = val
 		}
 	}
 
@@ -101,45 +101,68 @@ func handleHTTP(client net.Conn, s string) {
 		return
 	}
 
-	// [新增] 第二步：阻断访问本地服务的请求
+	// [阻断2] 检查目标是否为本地服务
 	{
-		// 解析 Host
-		host, _, err := net.SplitHostPort(hostPort)
+		hostStr, _, err := net.SplitHostPort(hostPort)
 		if err != nil {
-			host = hostPort // 处理不带端口的情况
+			hostStr = hostPort // 处理不带端口的情况
 		}
 
-		// 统一小写处理
-		host = strings.ToLower(host)
-
-		// 阻断条件
-		switch {
-		case host == "localhost":
-			log.Printf("[HTTP][%s][%s] Block localhost host", s, clientAddr)
-			return
-		case host == "127.0.0.1", host == "::1":
-			log.Printf("[HTTP][%s][%s] Block loopback host", s, clientAddr)
-			return
-		default:
-			// 通用回环地址检测
-			if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
-				log.Printf("[HTTP][%s][%s] Block loopback IP host", s, clientAddr)
+		// 尝试解析为 IP
+		if hostIP := net.ParseIP(hostStr); hostIP != nil {
+			if hostIP.IsLoopback() {
+				log.Printf("[HTTP][%s][%s] Block loopback host: %s", s, clientAddr, hostPort)
 				return
+			}
+		} else {
+			// 如果是域名，检查是否解析为回环地址
+			if ips, err := net.LookupIP(hostStr); err == nil {
+				for _, ip := range ips {
+					if ip.IsLoopback() {
+						log.Printf("[HTTP][%s][%s] Block domain resolve to loopback: %s", s, clientAddr, hostStr)
+						return
+					}
+				}
 			}
 		}
 	}
 
-	// [原有] 第三步：阻断自连请求
+	// [阻断3] 精确自连检查（IP 级别）
 	{
-		clientIP, _, _ := net.SplitHostPort(clientAddr) // 前面已验证过格式
-		host, _, _ := net.SplitHostPort(hostPort)      // 前面已验证过格式
-		if host == clientIP {
-			log.Printf("[HTTP][%s][%s] Block self connection", s, clientAddr)
+		// 解析客户端 IP
+		clientIPStr, _, err := net.SplitHostPort(clientAddr)
+		if err != nil {
+			clientIPStr = clientAddr
+		}
+		clientIP := net.ParseIP(clientIPStr)
+		if clientIP == nil {
+			log.Printf("[HTTP][%s][%s] Invalid client IP: %s", s, clientAddr, clientIPStr)
+			return
+		}
+
+		// 解析目标 Host
+		hostStr, _, err := net.SplitHostPort(hostPort)
+		if err != nil {
+			hostStr = hostPort
+		}
+		hostIP := net.ParseIP(hostStr)
+		if hostIP == nil {
+			// 如果 Host 是域名，进行 DNS 解析
+			if ips, err := net.LookupIP(hostStr); err == nil && len(ips) > 0 {
+				hostIP = ips[0] // 取第一个 A 记录
+			} else {
+				return
+			}
+		}
+
+		// 比较 IP 地址
+		if hostIP.Equal(clientIP) {
+			log.Printf("[HTTP][%s][%s] Block self connection to %s", s, clientAddr, hostPort)
 			return
 		}
 	}
 
-	// 记录合法请求
+	// 记录合法连接
 	log.Printf("[HTTP][%s] %s <-> %s", s, clientAddr, hostPort)
 
 	// 建立远程连接
